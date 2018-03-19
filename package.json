@@ -1,0 +1,32 @@
+{
+  "name": "resourcetiming-visibility",
+  "version": "0.1.0",
+  "description": "Crawls the Top N Alexa sites, comparing how many resources are visible from ResourceTiming vs. what the browser downloads",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicjansma/resourcetiming-visibility.git"
+  },
+  "bin": {
+    "resourcetiming-visibility": "index.js"
+  },
+  "author": "Nic Jansma",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/nicjansma/resourcetiming-visibility/issues"
+  },
+  "homepage": "https://github.com/nicjansma/resourcetiming-visibility#readme",
+  "dependencies": {
+    "async": "^2.6.0",
+    "await-sleep": "0.0.1",
+    "awaitable-async": "0.0.6",
+    "chalk": "^2.3.1",
+    "limit-string-length": "0.0.9",
+    "puppeteer": "^1.1.1"
+  },
+  "devDependencies": {
+    "debug": "^3.1.0",
+    "eslint": "^4.18.1",
+    "eslint-config-nicjansma": "^1.0.4"
+  }
+}
