@@ -230,6 +230,7 @@ Crawler.prototype.analyze = async function(url, responses, pageResourceTimingDat
 
     const bufferSize = pageResourceTimingData.bufferSize;
     const exceededDefaultBuffer = pageResourceTimingData.exceededDefaultBuffer;
+    const mainFrameEntries = pageResourceTimingData.mainFrameEntries;
 
     // show the output
     console.log(all);
@@ -237,7 +238,7 @@ Crawler.prototype.analyze = async function(url, responses, pageResourceTimingDat
     // write the site JSON
     outSites.write(JSON.stringify({
         url, all, javascripts, css, images, xhrs, fonts, videos, pixels, html,
-        bufferSize, exceededDefaultBuffer
+        bufferSize, exceededDefaultBuffer, mainFrameEntries
     }));
 
     outSites.write("\n");

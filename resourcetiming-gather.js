@@ -88,6 +88,7 @@ exports.fetch = async function() {
     return {
         resources: crawlFrame(window, true, 0, 0, 0),
         bufferSize: window.setResourceTimingBufferSize ? window.setResourceTimingBufferSize : 150,
-        exceededDefaultBuffer: window.performance.getEntriesByType("resource").length >= 150
+        exceededDefaultBuffer: window.performance.getEntriesByType("resource").length >= 150,
+        mainFrameEntries: window.performance.getEntriesByType("resource").length
     };
 };
