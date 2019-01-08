@@ -50,6 +50,9 @@ Crawler.prototype.crawl = async function() {
     // whether or not crawling is active
     let crawlingActive = false;
 
+    // original URLs from redirects
+    let redirectOrigUrls = {};
+
     // Listens for Page Responses
     page.on("response", async response => {
         if (!crawlingActive) {
@@ -71,7 +74,13 @@ Crawler.prototype.crawl = async function() {
         }
 
         if (response.status() === 301 || response.status() === 302) {
-            // skip redirects
+            // skip redirects, saving the data so we know where later responses
+            // came from
+
+            const redirectedUrl = require("url").resolve(response.url(), response.headers().location);
+
+            redirectOrigUrls[redirectedUrl] = response.url();
+
             return;
         }
 
@@ -83,6 +92,11 @@ Crawler.prototype.crawl = async function() {
         let resp = {
             url: response.url()
         };
+
+        // track from the redirect
+        if (redirectOrigUrls[resp.url]) {
+            resp.url = redirectOrigUrls[resp.url];
+        }
 
         // track important headers
         const headers = response.headers();
@@ -101,6 +115,11 @@ Crawler.prototype.crawl = async function() {
                 // NOP
             }
         }
+
+        //
+        // Access-Control-Allow-Origin
+        //
+        resp.acao = headers["access-control-allow-origin"];
 
         // Content-Type and Content-Encoding
         resp.contentType = headers["content-type"];
@@ -270,6 +289,8 @@ Crawler.prototype.analyzeForAssetType = function(assetType, responses, pageResou
     let visibleBytes = 0;
     let noTaoEntries = 0;
     let noTaoBytes = 0;
+    let noTaoAcaoWouldHelpEntries = 0;
+    let noTaoAcaoWouldHelpBytes = 0;
     let missingEntries = 0;
     let missingBytes = 0;
 
@@ -289,16 +310,23 @@ Crawler.prototype.analyzeForAssetType = function(assetType, responses, pageResou
 
         if (!rt) {
             // ResourceTiming Missing
-            debug("\t", chalk.underline(url), "missing");
+            debug("\t", chalk.underline(url), `[${assetType}]`, "missing");
             missingEntries++;
             missingBytes += response.transferSize;
             response.missing = true;
         } else if (rt.noTao) {
             // ResourceTiming Restricted
-            debug("\t", chalk.underline(url), "no TAO");
             noTaoEntries++;
             noTaoBytes += response.transferSize;
-            response.noTao = true;
+
+            if (response.acao) {
+                // ResourceTiming Restricted
+                debug("\t", chalk.underline(url), `[${assetType}]`, "no TAO / has ACAO");
+                noTaoAcaoWouldHelpEntries++;
+                noTaoAcaoWouldHelpBytes += response.transferSize;
+            } else {
+                debug("\t", chalk.underline(url), `[${assetType}]`, "no TAO");
+            }
         } else {
             // ResourceTiming Visible
             visibleEntries++;
@@ -318,8 +346,10 @@ Crawler.prototype.analyzeForAssetType = function(assetType, responses, pageResou
         visibleBytes,
         noTaoEntries,
         noTaoBytes,
+        noTaoAcaoWouldHelpEntries,
+        noTaoAcaoWouldHelpBytes,
         missingEntries,
-        missingBytes
+        missingBytes,
     };
 };
 
