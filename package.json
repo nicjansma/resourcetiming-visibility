@@ -22,7 +22,7 @@
     "awaitable-async": "0.0.6",
     "chalk": "^2.3.1",
     "limit-string-length": "0.0.9",
-    "puppeteer": "^1.1.1"
+    "puppeteer": "^1.13.0"
   },
   "devDependencies": {
     "debug": "^3.1.0",
