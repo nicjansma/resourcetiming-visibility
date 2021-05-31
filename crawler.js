@@ -24,9 +24,11 @@ var outUrls = fs.createWriteStream("output-urls.json");
  * Creates a new Crawler
  *
  * @param {string[]} sites Sites
+ * @param {boolean} debugMode Debug mode
  */
-function Crawler(sites) {
+function Crawler(sites, debugMode) {
     this.sites = sites;
+    this.debugMode = debugMode;
 }
 
 /**
@@ -270,6 +272,18 @@ Crawler.prototype.analyze = async function(url, responses, pageResourceTimingDat
 
         outUrls.write(JSON.stringify(response));
         outUrls.write("\n");
+    }
+
+    if (this.debugMode) {
+        console.log(`Visible (${all.visibleEntries + all.noTaoEntries}):`);
+        for (let response of responses.filter(r => !r.missing)) {
+            console.log(`\t${response.url}`);
+        }
+
+        console.log(`Missing (${all.missingEntries}):`);
+        for (let response of responses.filter(r => r.missing).sort(r => r.name)) {
+            console.log(`\t${response.url}`);
+        }
     }
 };
 

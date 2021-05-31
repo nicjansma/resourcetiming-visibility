@@ -12,6 +12,8 @@ if (process.argv.length <= 2) {
     process.exit(1);
 }
 
+var debugMode = false;
+
 let sites = [];
 
 if (process.argv[2].indexOf("http") === 0) {
@@ -26,6 +28,10 @@ if (process.argv[2].indexOf("http") === 0) {
         .slice(0, numberOfSites);
 }
 
+if (process.argv.length >= 4 && process.argv[3] === "--debug") {
+    debugMode = true;
+}
+
 // call Crawler
-var crawler = new Crawler(sites);
+var crawler = new Crawler(sites, debugMode);
 crawler.crawl();
