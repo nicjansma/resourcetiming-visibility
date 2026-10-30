@@ -1,10 +1,10 @@
 # ResourceTiming-Visibility
 
-v0.1.0
+v1.0.0
 
-Copyright 2018 Nic Jansma
+Copyright 2026 Nic Jansma
 
-http://nicj.net
+https://nicj.net
 
 Licensed under the MIT license
 
@@ -91,9 +91,9 @@ Add `--debug` to list visible vs. missing URLs for each site.
 * `output-sites.json`: one JSON line per site, with entry/byte counts (total,
   visible, no TAO, missing) for all resources and per asset type. When EasyList
   is loaded, also:
-    * `adFrames`: the same counts, for resources in ad IFRAMEs
-    * `adFrameCount`: number of distinct ad IFRAMEs
-    * `adFrameEntriesPct` / `adFrameBytesPct`: percentage of the site's
+  * `adFrames`: the same counts, for resources in ad IFRAMEs
+  * `adFrameCount`: number of distinct ad IFRAMEs
+  * `adFrameEntriesPct` / `adFrameBytesPct`: percentage of the site's
       resources / bytes in ad IFRAMEs
 * `output-urls.json`: one JSON line per resource, including the `frameUrl` that
   loaded it. When EasyList is loaded, also `adFrame` (true/false), plus the
@@ -105,4 +105,13 @@ at the end of the crawl.
 ## Version History
 
 * v0.1.0 - 2018-03-15
-    * Initial version
+  * Initial version
+* v1.0.0 - 2026-10-30
+  * Uses CrUX top sites list instead of Alexa
+  * Calculates stats for frames coming from EasyList
+
+## AI Disclosure
+
+Versions before 1.0.0 were hand-written.
+
+Versions 1.0.0+ are being developed with AI assistance for planning, coding and verification.
