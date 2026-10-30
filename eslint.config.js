@@ -36,7 +36,7 @@ export default [
     },
     {
         // functions serialized by Puppeteer and run in the page
-        files: ["resourcetiming-*.js"],
+        files: ["js/**/*.js"],
         languageOptions: {
             globals: {
                 ...globals.browser

@@ -1,7 +1,7 @@
 {
   "name": "resourcetiming-visibility",
   "version": "0.1.0",
-  "description": "Crawls the Top N Alexa sites, comparing how many resources are visible from ResourceTiming vs. what the browser downloads",
+  "description": "Crawls the Top N CrUX sites, comparing how many resources are visible from ResourceTiming vs. what the browser downloads",
   "type": "module",
   "main": "index.js",
   "bin": {

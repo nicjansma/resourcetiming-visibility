@@ -6,8 +6,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { styleText } from "node:util";
 import createDebug from "debug";
 import puppeteer from "puppeteer";
-import { gatherResourceTimings } from "./resourcetiming-gather.js";
-import { trackResourceTimingBuffer } from "./resourcetiming-buffer-size.js";
+import { gatherResourceTimings } from "./js/resourcetiming-gather.js";
+import { trackResourceTimingBuffer } from "./js/resourcetiming-buffer-size.js";
 
 const debug = createDebug("crawler");
 
