@@ -84,6 +84,13 @@ the next:
 node index.js 1M --limit 500
 ```
 
+Use `--timeout S` to change how many seconds to wait for each page to load
+(default: 30). Sites that don't finish loading in time are skipped:
+
+```sh
+node index.js 10K --timeout 60
+```
+
 Add `--debug` to list visible vs. missing URLs for each site.
 
 ## Output

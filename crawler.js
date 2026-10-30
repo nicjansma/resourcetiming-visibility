@@ -46,11 +46,13 @@ export default class Crawler {
      * @param {object} [options] Options
      * @param {boolean} [options.debugMode] Debug mode
      * @param {AdFrameDetector} [options.adFrameDetector] Ad IFRAME detector (ad IFRAMEs aren't tracked if not set)
+     * @param {number} [options.timeout] Page load timeout (ms)
      */
-    constructor(sites, { debugMode = false, adFrameDetector = null } = {}) {
+    constructor(sites, { debugMode = false, adFrameDetector = null, timeout = 30000 } = {}) {
         this.sites = sites;
         this.debugMode = debugMode;
         this.adFrameDetector = adFrameDetector;
+        this.timeout = timeout;
 
         // totals across all sites
         this.totals = {
@@ -259,10 +261,12 @@ export default class Crawler {
 
                 await page.goto(url, {
                     waitUntil: ["networkidle2", "load"],
-                    timeout: 30000
+                    timeout: this.timeout
                 });
-            } catch {
-                console.log("Crawl timeout");
+            } catch (e) {
+                console.log(e.name === "TimeoutError" ?
+                    `Crawl timeout (${this.timeout / 1000}s)` :
+                    `Crawl error: ${e.message}`);
                 continue;
             }
 

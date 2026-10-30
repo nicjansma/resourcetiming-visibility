@@ -22,9 +22,13 @@ const EASYLIST_FILE = join(import.meta.dirname, "easylist.txt");
 // supported Top N sizes (the CrUX rank buckets)
 const TOP_N_SIZES = [1000, 5000, 10000, 50000, 100000, 500000, 1000000];
 
-const USAGE = "Usage: resourcetiming-visibility [url | top N sites] [--limit M] [--debug]\n" +
+// default page load timeout (seconds)
+const DEFAULT_TIMEOUT = 30;
+
+const USAGE = "Usage: resourcetiming-visibility [url | top N sites] [--limit M] [--timeout S] [--debug]\n" +
     "  N: 1K, 5K, 10K, 50K, 100K, 500K or 1M (or the full number, e.g. 10000)\n" +
-    "  --limit M: only crawl the first M of the Top N sites";
+    "  --limit M: only crawl the first M of the Top N sites\n" +
+    `  --timeout S: page load timeout, in seconds (default: ${DEFAULT_TIMEOUT})`;
 
 //
 // Functions
@@ -104,7 +108,8 @@ try {
         allowPositionals: true,
         options: {
             debug: { type: "boolean", default: false },
-            limit: { type: "string" }
+            limit: { type: "string" },
+            timeout: { type: "string", default: String(DEFAULT_TIMEOUT) }
         }
     });
 } catch (e) {
@@ -123,6 +128,14 @@ if (args.values.limit !== undefined) {
         console.error(USAGE);
         process.exit(1);
     }
+}
+
+const timeout = Number(args.values.timeout);
+
+if (!Number.isFinite(timeout) || timeout <= 0) {
+    console.error(`Invalid --timeout: ${args.values.timeout}`);
+    console.error(USAGE);
+    process.exit(1);
 }
 
 const [target] = args.positionals;
@@ -169,7 +182,8 @@ if (existsSync(EASYLIST_FILE)) {
 // call Crawler
 const crawler = new Crawler(sites, {
     debugMode: args.values.debug,
-    adFrameDetector
+    adFrameDetector,
+    timeout: timeout * 1000
 });
 
 await crawler.crawl();
