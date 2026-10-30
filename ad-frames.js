@@ -39,30 +39,63 @@ export default class AdFrameDetector {
     }
 
     /**
-     * Finds the outermost ad IFRAME that a frame is in (including the frame itself).
+     * Analyzes the IFRAMEs a frame is in (including the frame itself), up to the main frame.
      *
      * @param {Frame|null} frame Puppeteer Frame
      * @param {string} [frameUrl] URL of the frame, if known (e.g. for an IFRAME's own
      *  document request, before the Frame's URL has been updated)
      *
-     * @returns {{url: string, filter: string}|null} Ad IFRAME URL and EasyList filter that matched, if any
+     * @returns {{
+     *   adFrame: {url: string, filter: string}|null,
+     *   crossOrigin: boolean,
+     *   accessibleWithAdFrameException: boolean
+     * }} The outermost ad IFRAME (and EasyList filter that matched), if any; whether any IFRAME
+     *  is cross-origin to the main frame; and whether all of the cross-origin IFRAMEs are ad IFRAMEs
+     *  (so the main frame could reach the frame if ad IFRAMEs were made accessible)
      */
-    match(frame, frameUrl) {
-        let adFrame = null;
+    analyze(frame, frameUrl) {
+        // IFRAMEs from the frame up to (but not including) the main frame
+        const chain = [];
         let url = frameUrl ?? frame?.url();
 
-        // walk up to (but not including) the main frame, keeping the outermost ad IFRAME
         for (let parent = frame?.parentFrame(); parent; parent = parent.parentFrame()) {
-            const filter = this.matchUrl(url, parent.url());
-
-            if (filter) {
-                adFrame = { url, filter };
-            }
-
+            chain.push({ url, parentUrl: parent.url() });
             url = parent.url();
         }
 
-        return adFrame;
+        // after the walk, url is the main frame's
+        const mainOrigin = originOf(url);
+
+        let adFrame = null;
+        let crossOrigin = false;
+        let accessibleWithAdFrameException = true;
+
+        for (const { url: iframeUrl, parentUrl } of chain) {
+            const filter = this.matchUrl(iframeUrl, parentUrl);
+
+            // keep the outermost ad IFRAME (the chain goes from innermost to outermost)
+            if (filter) {
+                adFrame = { url: iframeUrl, filter };
+            }
+
+            // about:blank and srcdoc IFRAMEs inherit their creator's origin, so are only
+            // inaccessible if a frame above them is
+            const iframeOrigin = originOf(iframeUrl);
+
+            if (iframeOrigin && iframeOrigin !== mainOrigin) {
+                crossOrigin = true;
+
+                if (!filter) {
+                    accessibleWithAdFrameException = false;
+                }
+            }
+        }
+
+        return {
+            adFrame,
+            crossOrigin,
+            accessibleWithAdFrameException: crossOrigin && accessibleWithAdFrameException
+        };
     }
 
     /**
@@ -93,4 +126,15 @@ export default class AdFrameDetector {
 
         return this.cache.get(key);
     }
+}
+
+/**
+ * Gets the origin of an HTTP(S) URL
+ *
+ * @param {string} url URL
+ *
+ * @returns {string|null} Origin, or null for non-HTTP(S) URLs (e.g. about:blank)
+ */
+function originOf(url) {
+    return url?.startsWith("http") ? new URL(url).origin : null;
 }

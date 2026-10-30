@@ -60,7 +60,9 @@ export default class Crawler {
             entries: 0,
             bytes: 0,
             adFrameEntries: 0,
-            adFrameBytes: 0
+            adFrameBytes: 0,
+            missingEntries: 0,
+            missingEntriesAllowingAccessToEasyListFrames: 0
         };
     }
 
@@ -183,7 +185,7 @@ export default class Crawler {
 
             // an IFRAME's own document is loaded before the Frame's URL is updated
             const frameUrl = isFrameDocument ? responseUrl : frame?.url();
-            const adFrame = this.adFrameDetector?.match(frame, frameUrl);
+            const frameInfo = this.adFrameDetector?.analyze(frame, frameUrl);
 
             const resp = {
                 url,
@@ -210,10 +212,17 @@ export default class Crawler {
                 frameUrl
             };
 
-            if (this.adFrameDetector) {
+            if (frameInfo) {
+                const { adFrame, crossOrigin, accessibleWithAdFrameException } = frameInfo;
+
                 resp.adFrame = Boolean(adFrame);
                 resp.adFrameUrl = adFrame?.url;
                 resp.adFilter = adFrame?.filter;
+
+                // in a cross-origin IFRAME (so not reachable by the main frame), and if it
+                // would be reachable if EasyList IFRAMEs were accessible
+                resp.crossOriginFrame = crossOrigin;
+                resp.accessibleWithAdFrameException = accessibleWithAdFrameException;
             }
 
             if (!resp.assetType) {
@@ -328,6 +337,9 @@ export default class Crawler {
         this.totals.sites++;
         this.totals.entries += all.totalEntries;
         this.totals.bytes += all.totalBytes;
+        this.totals.missingEntries += all.missingEntries;
+        this.totals.missingEntriesAllowingAccessToEasyListFrames +=
+            all.missingEntriesAllowingAccessToEasyListFrames ?? 0;
 
         const {
             bufferSize,
@@ -395,7 +407,15 @@ export default class Crawler {
      * Logs the totals across all sites
      */
     logTotals() {
-        const { sites, entries, bytes, adFrameEntries, adFrameBytes } = this.totals;
+        const {
+            sites,
+            entries,
+            bytes,
+            adFrameEntries,
+            adFrameBytes,
+            missingEntries,
+            missingEntriesAllowingAccessToEasyListFrames
+        } = this.totals;
 
         console.log(styleText("green", `Crawled ${sites} sites: ${entries} resources, ${bytes} bytes`));
 
@@ -403,6 +423,12 @@ export default class Crawler {
             console.log(styleText("green",
                 `  In ad IFRAMEs: ${adFrameEntries} resources (${percent(adFrameEntries, entries)}%), ` +
                 `${adFrameBytes} bytes (${percent(adFrameBytes, bytes)}%)`));
+
+            console.log(styleText("green",
+                `  Missing from ResourceTiming: ${missingEntries} resources, ` +
+                `${missingEntriesAllowingAccessToEasyListFrames} ` +
+                `(${percent(missingEntriesAllowingAccessToEasyListFrames, missingEntries)}%) ` +
+                "would be visible if EasyList IFRAMEs were accessible"));
         }
     }
 
@@ -429,6 +455,12 @@ export default class Crawler {
             missingBytes: 0
         };
 
+        if (this.adFrameDetector) {
+            // missing, but would be visible if EasyList IFRAMEs were accessible to the main frame
+            stats.missingEntriesAllowingAccessToEasyListFrames = 0;
+            stats.missingBytesAllowingAccessToEasyListFrames = 0;
+        }
+
         for (const response of responses) {
             const { url, transferSize } = response;
 
@@ -444,6 +476,11 @@ export default class Crawler {
                 stats.missingEntries++;
                 stats.missingBytes += transferSize;
                 response.missing = true;
+
+                if (response.accessibleWithAdFrameException) {
+                    stats.missingEntriesAllowingAccessToEasyListFrames++;
+                    stats.missingBytesAllowingAccessToEasyListFrames += transferSize;
+                }
             } else if (rt.noTao) {
                 // ResourceTiming Restricted
                 stats.noTaoEntries++;

@@ -102,12 +102,21 @@ Add `--debug` to list visible vs. missing URLs for each site.
   * `adFrameCount`: number of distinct ad IFRAMEs
   * `adFrameEntriesPct` / `adFrameBytesPct`: percentage of the site's
       resources / bytes in ad IFRAMEs
+  * `missingEntriesAllowingAccessToEasyListFrames` /
+      `missingBytesAllowingAccessToEasyListFrames` (in each group of counts):
+      missing resources that would be visible if EasyList IFRAMEs were
+      accessible to the main frame, i.e. every cross-origin IFRAME between the
+      resource and the main frame is an EasyList IFRAME
 * `output-urls.json`: one JSON line per resource, including the `frameUrl` that
   loaded it. When EasyList is loaded, also `adFrame` (true/false), plus the
-  `adFrameUrl` and EasyList `adFilter` that matched.
+  `adFrameUrl` and EasyList `adFilter` that matched, `crossOriginFrame` (if
+  it's in an IFRAME that's cross-origin to the main frame) and
+  `accessibleWithAdFrameException` (if all of those cross-origin IFRAMEs are
+  EasyList IFRAMEs).
 
-The percentage of resources and bytes in ad IFRAMEs across all sites is logged
-at the end of the crawl.
+The percentage of resources and bytes in ad IFRAMEs, and the percentage of
+missing resources that would be visible if EasyList IFRAMEs were accessible,
+across all sites, are logged at the end of the crawl.
 
 ## Version History
 
