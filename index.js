@@ -2,11 +2,12 @@
 //
 // Imports
 //
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { createGunzip } from "node:zlib";
+import AdFrameDetector from "./ad-frames.js";
 import Crawler from "./crawler.js";
 
 //
@@ -14,6 +15,9 @@ import Crawler from "./crawler.js";
 //
 // CrUX Top Lists, from https://github.com/zakird/crux-top-lists
 const SITES_FILE = join(import.meta.dirname, "crux-top-lists.csv.gz");
+
+// EasyList, from https://easylist.to/
+const EASYLIST_FILE = join(import.meta.dirname, "easylist.txt");
 
 // supported Top N sizes (the CrUX rank buckets)
 const TOP_N_SIZES = [1000, 5000, 10000, 50000, 100000, 500000, 1000000];
@@ -153,7 +157,19 @@ if (target.startsWith("http")) {
     console.log(`Loaded ${sites.length} sites from the CrUX Top ${topN}`);
 }
 
+// load EasyList, to track resources in ad IFRAMEs
+let adFrameDetector = null;
+
+if (existsSync(EASYLIST_FILE)) {
+    adFrameDetector = await AdFrameDetector.load(EASYLIST_FILE);
+} else {
+    console.warn(`${EASYLIST_FILE} not found, ad IFRAMEs won't be tracked. See the README for how to download it.`);
+}
+
 // call Crawler
-const crawler = new Crawler(sites, args.values.debug);
+const crawler = new Crawler(sites, {
+    debugMode: args.values.debug,
+    adFrameDetector
+});
 
 await crawler.crawl();

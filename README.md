@@ -42,6 +42,22 @@ curl -L -o crux-top-lists.csv.gz \
 The list is updated monthly. It's a gzipped CSV of `origin,rank` rows, where
 rank is a bucket (1000, 5000, 10000, ...) rather than an exact position.
 
+### EasyList (optional)
+
+To measure how many resources are loaded in ad IFRAMEs, download
+[EasyList](https://easylist.to/) into this directory as `easylist.txt`:
+
+```sh
+curl -L -o easylist.txt https://easylist.to/easylist/easylist.txt
+```
+
+If it's not there, ad IFRAMEs aren't tracked.
+
+A resource is counted as in an ad IFRAME if the frame that loaded it, or any
+frame above it, is an IFRAME whose URL EasyList would block (as a `subdocument`
+request from its parent frame). Matching uses
+[`@ghostery/adblocker`](https://github.com/ghostery/adblocker).
+
 ## Usage
 
 Crawl one URL:
@@ -69,6 +85,22 @@ node index.js 1M --limit 500
 ```
 
 Add `--debug` to list visible vs. missing URLs for each site.
+
+## Output
+
+* `output-sites.json`: one JSON line per site, with entry/byte counts (total,
+  visible, no TAO, missing) for all resources and per asset type. When EasyList
+  is loaded, also:
+    * `adFrames`: the same counts, for resources in ad IFRAMEs
+    * `adFrameCount`: number of distinct ad IFRAMEs
+    * `adFrameEntriesPct` / `adFrameBytesPct`: percentage of the site's
+      resources / bytes in ad IFRAMEs
+* `output-urls.json`: one JSON line per resource, including the `frameUrl` that
+  loaded it. When EasyList is loaded, also `adFrame` (true/false), plus the
+  `adFrameUrl` and EasyList `adFilter` that matched.
+
+The percentage of resources and bytes in ad IFRAMEs across all sites is logged
+at the end of the crawl.
 
 ## Version History
 

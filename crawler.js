@@ -14,17 +14,20 @@ const debug = createDebug("crawler");
 //
 // Constants
 //
-// output key -> asset type (null for all asset types)
-const ASSET_TYPE_GROUPS = {
-    all: null,
-    javascripts: "javascript",
-    css: "css",
-    images: "image",
-    xhrs: "xhr",
-    fonts: "font",
-    videos: "video",
-    pixels: "pixel",
-    html: "html"
+// output key -> which responses are in the group
+const RESPONSE_GROUPS = {
+    all: () => true,
+    javascripts: r => r.assetType === "javascript",
+    css: r => r.assetType === "css",
+    images: r => r.assetType === "image",
+    xhrs: r => r.assetType === "xhr",
+    fonts: r => r.assetType === "font",
+    videos: r => r.assetType === "video",
+    pixels: r => r.assetType === "pixel",
+    html: r => r.assetType === "html",
+
+    // in an ad IFRAME (according to EasyList)
+    adFrames: r => r.adFrame
 };
 
 const REDIRECT_STATUSES = new Set([301, 302]);
@@ -40,11 +43,23 @@ export default class Crawler {
      * Creates a new Crawler
      *
      * @param {string[]} sites Sites
-     * @param {boolean} debugMode Debug mode
+     * @param {object} [options] Options
+     * @param {boolean} [options.debugMode] Debug mode
+     * @param {AdFrameDetector} [options.adFrameDetector] Ad IFRAME detector (ad IFRAMEs aren't tracked if not set)
      */
-    constructor(sites, debugMode = false) {
+    constructor(sites, { debugMode = false, adFrameDetector = null } = {}) {
         this.sites = sites;
         this.debugMode = debugMode;
+        this.adFrameDetector = adFrameDetector;
+
+        // totals across all sites
+        this.totals = {
+            sites: 0,
+            entries: 0,
+            bytes: 0,
+            adFrameEntries: 0,
+            adFrameBytes: 0
+        };
     }
 
     /**
@@ -62,6 +77,8 @@ export default class Crawler {
 
         try {
             await this.crawlSites(browser);
+
+            this.logTotals();
         } finally {
             // stop the browser
             await browser.close();
@@ -157,6 +174,15 @@ export default class Crawler {
 
             const contentType = headers["content-type"];
 
+            // the frame that loaded this response, and if it's in an ad IFRAME
+            const frame = response.frame();
+            const isFrameDocument = response.request().isNavigationRequest() &&
+                Boolean(frame?.parentFrame());
+
+            // an IFRAME's own document is loaded before the Frame's URL is updated
+            const frameUrl = isFrameDocument ? responseUrl : frame?.url();
+            const adFrame = this.adFrameDetector?.match(frame, frameUrl);
+
             const resp = {
                 url,
                 contentLength,
@@ -176,8 +202,17 @@ export default class Crawler {
                 assetType: getAssetTypeFor(url, contentType, contentLength),
 
                 // extract the host
-                host: new URL(url).host
+                host: new URL(url).host,
+
+                // frame
+                frameUrl
             };
+
+            if (this.adFrameDetector) {
+                resp.adFrame = Boolean(adFrame);
+                resp.adFrameUrl = adFrame?.url;
+                resp.adFilter = adFrame?.filter;
+            }
 
             if (!resp.assetType) {
                 debug(`No asset type for ${resp.url}`);
@@ -189,7 +224,8 @@ export default class Crawler {
                 resp.contentLength,
                 resp.headerSize,
                 resp.transferSize,
-                resp.assetType);
+                resp.assetType,
+                resp.adFrame ? styleText("yellow", "[ad frame]") : "");
 
             responses.push(resp);
         });
@@ -278,8 +314,16 @@ export default class Crawler {
         }
 
         const groups = Object.fromEntries(
-            Object.entries(ASSET_TYPE_GROUPS).map(([key, assetType]) =>
-                [key, this.analyzeForAssetType(assetType, responses, resourceTimingsByUrl)]));
+            Object.entries(RESPONSE_GROUPS)
+                .filter(([key]) => key !== "adFrames" || this.adFrameDetector)
+                .map(([key, inGroup]) =>
+                    [key, this.analyzeGroup(key, responses.filter(inGroup), resourceTimingsByUrl)]));
+
+        const { all, adFrames } = groups;
+
+        this.totals.sites++;
+        this.totals.entries += all.totalEntries;
+        this.totals.bytes += all.totalBytes;
 
         const {
             bufferSize,
@@ -289,12 +333,31 @@ export default class Crawler {
         } = pageResourceTimingData;
 
         // show the output
-        console.log(groups.all);
+        console.log(all);
+
+        let adFrameStats;
+
+        if (adFrames) {
+            adFrameStats = {
+                adFrameCount: new Set(responses.map(r => r.adFrameUrl).filter(Boolean)).size,
+                adFrameEntriesPct: percent(adFrames.totalEntries, all.totalEntries),
+                adFrameBytesPct: percent(adFrames.totalBytes, all.totalBytes)
+            };
+
+            this.totals.adFrameEntries += adFrames.totalEntries;
+            this.totals.adFrameBytes += adFrames.totalBytes;
+
+            console.log(styleText("yellow",
+                `  Ad IFRAMEs: ${adFrameStats.adFrameCount}, ` +
+                `${adFrames.totalEntries} resources (${adFrameStats.adFrameEntriesPct}%), ` +
+                `${adFrames.totalBytes} bytes (${adFrameStats.adFrameBytesPct}%)`));
+        }
 
         // write the site JSON
         this.outSites.write(JSON.stringify({
             url,
             ...groups,
+            ...adFrameStats,
             bufferSize,
             exceededDefaultBuffer,
             mainFrameEntries,
@@ -310,8 +373,6 @@ export default class Crawler {
         }
 
         if (this.debugMode) {
-            const { all } = groups;
-
             console.log(`Visible (${all.visibleEntries + all.noTaoEntries}):`);
 
             for (const response of responses.filter(r => !r.missing)) {
@@ -327,15 +388,30 @@ export default class Crawler {
     }
 
     /**
-     * Analyzes the responses vs ResourceTiming for a specific asset type
+     * Logs the totals across all sites
+     */
+    logTotals() {
+        const { sites, entries, bytes, adFrameEntries, adFrameBytes } = this.totals;
+
+        console.log(styleText("green", `Crawled ${sites} sites: ${entries} resources, ${bytes} bytes`));
+
+        if (this.adFrameDetector) {
+            console.log(styleText("green",
+                `  In ad IFRAMEs: ${adFrameEntries} resources (${percent(adFrameEntries, entries)}%), ` +
+                `${adFrameBytes} bytes (${percent(adFrameBytes, bytes)}%)`));
+        }
+    }
+
+    /**
+     * Analyzes a group of responses vs ResourceTiming
      *
-     * @param {string|null} assetType Asset type (null for all)
-     * @param {object[]} responses Responses
+     * @param {string} group Group name (for logging)
+     * @param {object[]} responses Responses in the group
      * @param {Map<string, object>} resourceTimingsByUrl ResourceTimings, by URL
      *
      * @returns {object} ResourceTiming data
      */
-    analyzeForAssetType(assetType, responses, resourceTimingsByUrl) {
+    analyzeGroup(group, responses, resourceTimingsByUrl) {
         const stats = {
             totalEntries: 0,
             totalBytes: 0,
@@ -349,12 +425,7 @@ export default class Crawler {
             missingBytes: 0
         };
 
-        // only look at the specified asset type
-        const matching = assetType ?
-            responses.filter(response => response.assetType === assetType) :
-            responses;
-
-        for (const response of matching) {
+        for (const response of responses) {
             const { url, transferSize } = response;
 
             // try to find a matching ResourceTiming
@@ -365,7 +436,7 @@ export default class Crawler {
 
             if (!rt) {
                 // ResourceTiming Missing
-                debug("\t", styleText("underline", url), `[${assetType}]`, "missing");
+                debug("\t", styleText("underline", url), `[${group}]`, "missing");
                 stats.missingEntries++;
                 stats.missingBytes += transferSize;
                 response.missing = true;
@@ -375,11 +446,11 @@ export default class Crawler {
                 stats.noTaoBytes += transferSize;
 
                 if (response.acao) {
-                    debug("\t", styleText("underline", url), `[${assetType}]`, "no TAO / has ACAO");
+                    debug("\t", styleText("underline", url), `[${group}]`, "no TAO / has ACAO");
                     stats.noTaoAcaoWouldHelpEntries++;
                     stats.noTaoAcaoWouldHelpBytes += transferSize;
                 } else {
-                    debug("\t", styleText("underline", url), `[${assetType}]`, "no TAO");
+                    debug("\t", styleText("underline", url), `[${group}]`, "no TAO");
                 }
             } else {
                 // ResourceTiming Visible
@@ -395,6 +466,18 @@ export default class Crawler {
 
         return stats;
     }
+}
+
+/**
+ * Calculates a percentage, rounded to 2 decimal places
+ *
+ * @param {number} value Value
+ * @param {number} total Total
+ *
+ * @returns {number} Percentage (0 if total is 0)
+ */
+function percent(value, total) {
+    return total ? Math.round(value / total * 10000) / 100 : 0;
 }
 
 /**

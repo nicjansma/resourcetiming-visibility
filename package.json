@@ -25,6 +25,7 @@
   },
   "homepage": "https://github.com/nicjansma/resourcetiming-visibility#readme",
   "dependencies": {
+    "@ghostery/adblocker": "^2.20.3",
     "debug": "^4.4.3",
     "puppeteer": "^25.16.0"
   },
