@@ -62,7 +62,7 @@ export default class Crawler {
             adFrameEntries: 0,
             adFrameBytes: 0,
             missingEntries: 0,
-            missingEntriesAllowingAccessToEasyListFrames: 0
+            missingEntriesInEasyListFrames: 0
         };
     }
 
@@ -265,6 +265,8 @@ export default class Crawler {
             //
             // Goto the specified URL
             //
+            let timedOut = false;
+
             try {
                 crawlingActive = true;
 
@@ -273,16 +275,26 @@ export default class Crawler {
                     timeout: this.timeout
                 });
             } catch (e) {
-                console.log(e.name === "TimeoutError" ?
-                    `Crawl timeout (${this.timeout / 1000}s)` :
-                    `Crawl error: ${e.message}`);
-                continue;
+                if (e.name !== "TimeoutError") {
+                    console.log(`Crawl error: ${e.message}`);
+                    continue;
+                }
+
+                // the page may still be usable (e.g. it never reached network idle), unless
+                // the navigation never even committed
+                if (!page.url().startsWith("http")) {
+                    console.log(`Crawl timeout (${this.timeout / 1000}s), page didn't load`);
+                    continue;
+                }
+
+                console.log(`Crawl timeout (${this.timeout / 1000}s), gathering what has loaded so far`);
+                timedOut = true;
             }
 
             //
             // Collect all ResourceTiming data
             //
-            console.log("  [done loading, gathering ResourceTiming...]");
+            console.log(`  [done ${timedOut ? "waiting" : "loading"}, gathering ResourceTiming...]`);
 
             try {
                 const pageResourceTimingData = await page.evaluate(gatherResourceTimings);
@@ -293,17 +305,21 @@ export default class Crawler {
                 console.log("  [done gathering, analyzing...]");
 
                 // analyze ResourceTiming data
-                this.analyze(url, responses, pageResourceTimingData);
+                this.analyze(url, responses, pageResourceTimingData, timedOut);
             } catch (e) {
                 console.error("  [error in analysis]", e);
             }
 
             // go to about:blank so unload beacons get sent out for the previous page
             // before the next one
-            await page.goto("about:blank", {
-                waitUntil: ["networkidle2", "load"],
-                timeout: 5000
-            });
+            try {
+                await page.goto("about:blank", {
+                    waitUntil: ["networkidle2", "load"],
+                    timeout: 5000
+                });
+            } catch (e) {
+                console.log(`  [error unloading page: ${e.message}]`);
+            }
 
             await sleep(2000);
         }
@@ -315,8 +331,9 @@ export default class Crawler {
      * @param {string} url URL
      * @param {object[]} responses Responses
      * @param {object} pageResourceTimingData ResourceTimings
+     * @param {boolean} [timedOut] Whether the page timed out before it finished loading
      */
-    analyze(url, responses, pageResourceTimingData) {
+    analyze(url, responses, pageResourceTimingData, timedOut = false) {
         // index ResourceTimings by URL (keeping the first entry for each, if duplicated)
         const resourceTimingsByUrl = new Map();
 
@@ -338,8 +355,8 @@ export default class Crawler {
         this.totals.entries += all.totalEntries;
         this.totals.bytes += all.totalBytes;
         this.totals.missingEntries += all.missingEntries;
-        this.totals.missingEntriesAllowingAccessToEasyListFrames +=
-            all.missingEntriesAllowingAccessToEasyListFrames ?? 0;
+        this.totals.missingEntriesInEasyListFrames +=
+            all.missingEntriesInEasyListFrames ?? 0;
 
         const {
             bufferSize,
@@ -374,6 +391,7 @@ export default class Crawler {
             url,
             ...groups,
             ...adFrameStats,
+            timedOut,
             bufferSize,
             exceededDefaultBuffer,
             mainFrameEntries,
@@ -414,7 +432,7 @@ export default class Crawler {
             adFrameEntries,
             adFrameBytes,
             missingEntries,
-            missingEntriesAllowingAccessToEasyListFrames
+            missingEntriesInEasyListFrames
         } = this.totals;
 
         console.log(styleText("green", `Crawled ${sites} sites: ${entries} resources, ${bytes} bytes`));
@@ -426,8 +444,8 @@ export default class Crawler {
 
             console.log(styleText("green",
                 `  Missing from ResourceTiming: ${missingEntries} resources, ` +
-                `${missingEntriesAllowingAccessToEasyListFrames} ` +
-                `(${percent(missingEntriesAllowingAccessToEasyListFrames, missingEntries)}%) ` +
+                `${missingEntriesInEasyListFrames} ` +
+                `(${percent(missingEntriesInEasyListFrames, missingEntries)}%) ` +
                 "would be visible if EasyList IFRAMEs were accessible"));
         }
     }
@@ -457,8 +475,8 @@ export default class Crawler {
 
         if (this.adFrameDetector) {
             // missing, but would be visible if EasyList IFRAMEs were accessible to the main frame
-            stats.missingEntriesAllowingAccessToEasyListFrames = 0;
-            stats.missingBytesAllowingAccessToEasyListFrames = 0;
+            stats.missingEntriesInEasyListFrames = 0;
+            stats.missingBytesInEasyListFrames = 0;
         }
 
         for (const response of responses) {
@@ -478,8 +496,8 @@ export default class Crawler {
                 response.missing = true;
 
                 if (response.accessibleWithAdFrameException) {
-                    stats.missingEntriesAllowingAccessToEasyListFrames++;
-                    stats.missingBytesAllowingAccessToEasyListFrames += transferSize;
+                    stats.missingEntriesInEasyListFrames++;
+                    stats.missingBytesInEasyListFrames += transferSize;
                 }
             } else if (rt.noTao) {
                 // ResourceTiming Restricted

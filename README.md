@@ -85,7 +85,9 @@ node index.js 1M --limit 500
 ```
 
 Use `--timeout S` to change how many seconds to wait for each page to load
-(default: 30). Sites that don't finish loading in time are skipped:
+(default: 30). If a site doesn't finish loading in time, the stats are
+calculated from what has loaded so far (and `timedOut` is set in the output).
+Sites that don't start loading in time are skipped:
 
 ```sh
 node index.js 10K --timeout 60
@@ -96,14 +98,15 @@ Add `--debug` to list visible vs. missing URLs for each site.
 ## Output
 
 * `output-sites.json`: one JSON line per site, with entry/byte counts (total,
-  visible, no TAO, missing) for all resources and per asset type. When EasyList
+  visible, no TAO, missing) for all resources and per asset type, and
+  `timedOut` if the page didn't finish loading before `--timeout`. When EasyList
   is loaded, also:
   * `adFrames`: the same counts, for resources in ad IFRAMEs
   * `adFrameCount`: number of distinct ad IFRAMEs
   * `adFrameEntriesPct` / `adFrameBytesPct`: percentage of the site's
       resources / bytes in ad IFRAMEs
-  * `missingEntriesAllowingAccessToEasyListFrames` /
-      `missingBytesAllowingAccessToEasyListFrames` (in each group of counts):
+  * `missingEntriesInEasyListFrames` /
+      `missingBytesInEasyListFrames` (in each group of counts):
       missing resources that would be visible if EasyList IFRAMEs were
       accessible to the main frame, i.e. every cross-origin IFRAME between the
       resource and the main frame is an EasyList IFRAME
