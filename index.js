@@ -2,36 +2,60 @@
 //
 // Imports
 //
-const Crawler = require("./crawler");
-const fs = require("fs");
-const sitesFile = "sites-1000.csv";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import Crawler from "./crawler.js";
+
+const SITES_FILE = join(import.meta.dirname, "sites-1000.csv");
+const USAGE = "Usage: resourcetiming-visibility [url | number of Alexa Top N sites] [--debug]";
 
 // command-line arguments
-if (process.argv.length <= 2) {
-    console.error("Usage: resourcetiming-visibility [url | number of Alexa Top N sites]");
+let args;
+
+try {
+    args = parseArgs({
+        allowPositionals: true,
+        options: {
+            debug: { type: "boolean", default: false }
+        }
+    });
+} catch (e) {
+    console.error(e.message);
+    console.error(USAGE);
     process.exit(1);
 }
 
-var debugMode = false;
+const [target] = args.positionals;
 
-let sites = [];
+if (!target) {
+    console.error(USAGE);
+    process.exit(1);
+}
 
-if (process.argv[2].indexOf("http") === 0) {
-    sites = [process.argv[2]];
+let sites;
+
+if (target.startsWith("http")) {
+    sites = [target];
 } else {
-    // if given a nuber, load that many sites from the CSV
-    const numberOfSites = process.argv[2];
+    // if given a number, load that many sites from the CSV
+    const numberOfSites = Number.parseInt(target, 10);
+
+    if (!Number.isInteger(numberOfSites) || numberOfSites <= 0) {
+        console.error(`Invalid number of sites: ${target}`);
+        console.error(USAGE);
+        process.exit(1);
+    }
 
     // load the sites
-    sites = fs.readFileSync(sitesFile, "utf-8")
+    sites = (await readFile(SITES_FILE, "utf-8"))
         .split("\n")
+        .map(line => line.trim())
+        .filter(Boolean)
         .slice(0, numberOfSites);
 }
 
-if (process.argv.length >= 4 && process.argv[3] === "--debug") {
-    debugMode = true;
-}
-
 // call Crawler
-var crawler = new Crawler(sites, debugMode);
-crawler.crawl();
+const crawler = new Crawler(sites, args.values.debug);
+
+await crawler.crawl();

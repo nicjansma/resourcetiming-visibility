@@ -1,378 +1,420 @@
-"use strict";
-
 //
 // Imports
 //
-const debug = require("debug")("crawler");
-const puppeteer = require("puppeteer");
-const chalk = require("chalk");
-const sleep = require("await-sleep");
-const resourceTimingFetchFn = require("./resourcetiming-gather").fetch;
-const resourceTimingBufferSizeFn = require("./resourcetiming-buffer-size").exec;
-const limit = require("limit-string-length");
-const { URL } = require("url");
-const fs = require("fs");
+import { createWriteStream } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
+import { styleText } from "node:util";
+import createDebug from "debug";
+import puppeteer from "puppeteer";
+import { gatherResourceTimings } from "./resourcetiming-gather.js";
+import { trackResourceTimingBuffer } from "./resourcetiming-buffer-size.js";
 
-// create output streams
-var outSites = fs.createWriteStream("output-sites.json");
-var outUrls = fs.createWriteStream("output-urls.json");
+const debug = createDebug("crawler");
+
+//
+// Constants
+//
+// output key -> asset type (null for all asset types)
+const ASSET_TYPE_GROUPS = {
+    all: null,
+    javascripts: "javascript",
+    css: "css",
+    images: "image",
+    xhrs: "xhr",
+    fonts: "font",
+    videos: "video",
+    pixels: "pixel",
+    html: "html"
+};
+
+const REDIRECT_STATUSES = new Set([301, 302]);
 
 //
 // Functions
 //
 /**
- * Creates a new Crawler
- *
- * @param {string[]} sites Sites
- * @param {boolean} debugMode Debug mode
+ * Crawls a list of sites, comparing what the browser downloads vs. what ResourceTiming sees
  */
-function Crawler(sites, debugMode) {
-    this.sites = sites;
-    this.debugMode = debugMode;
+export default class Crawler {
+    /**
+     * Creates a new Crawler
+     *
+     * @param {string[]} sites Sites
+     * @param {boolean} debugMode Debug mode
+     */
+    constructor(sites, debugMode = false) {
+        this.sites = sites;
+        this.debugMode = debugMode;
+    }
+
+    /**
+     * Starts the Crawler run
+     */
+    async crawl() {
+        console.log(styleText("green", "Starting Crawler"));
+
+        // create output streams
+        this.outSites = createWriteStream("output-sites.json");
+        this.outUrls = createWriteStream("output-urls.json");
+
+        // launch the browser
+        const browser = await puppeteer.launch();
+
+        try {
+            await this.crawlSites(browser);
+        } finally {
+            // stop the browser
+            await browser.close();
+
+            await Promise.all([
+                new Promise(resolve => this.outSites.end(resolve)),
+                new Promise(resolve => this.outUrls.end(resolve))
+            ]);
+        }
+    }
+
+    /**
+     * Crawls each of the sites in a single browser tab
+     *
+     * @param {Browser} browser Puppeteer Browser
+     */
+    async crawlSites(browser) {
+        // create a new page
+        const page = await browser.newPage();
+
+        // page responses
+        let responses = [];
+
+        // current URL we're downloading
+        let currentUrl = "";
+
+        // whether or not crawling is active
+        let crawlingActive = false;
+
+        // original URLs from redirects
+        const redirectOrigUrls = new Map();
+
+        // Listens for Page Responses
+        page.on("response", async response => {
+            if (!crawlingActive) {
+                // don't track new responses if we're beyond monitoring
+                return;
+            }
+
+            const responseUrl = response.url();
+            const isRedirect = REDIRECT_STATUSES.has(response.status());
+
+            // skip the page itself
+            if (responseUrl === currentUrl || responseUrl === `${currentUrl}/`) {
+                // update to the new location so we skip that too
+                if (isRedirect) {
+                    currentUrl = new URL(response.headers().location, responseUrl).href;
+                    console.log(`  -> redirect to ${currentUrl}`);
+                }
+
+                return;
+            }
+
+            if (isRedirect) {
+                // skip redirects, saving the data so we know where later responses
+                // came from
+                const redirectedUrl = new URL(response.headers().location, responseUrl).href;
+
+                redirectOrigUrls.set(redirectedUrl, responseUrl);
+
+                return;
+            }
+
+            if (!responseUrl.startsWith("http")) {
+                // skip data: and other URLs
+                return;
+            }
+
+            // track from the redirect
+            const url = redirectOrigUrls.get(responseUrl) ?? responseUrl;
+
+            // track important headers
+            const headers = response.headers();
+
+            //
+            // Content-Length
+            //
+            let contentLength = Number(headers["content-length"]) || 0;
+
+            if (contentLength <= 0) {
+                try {
+                    contentLength = (await response.content()).byteLength;
+                } catch {
+                    contentLength = 0;
+                }
+            }
+
+            // headers size
+            const headerSize = Object.entries(headers)
+                .map(([name, value]) => `${name}: ${value}\n`)
+                .join("")
+                .length;
+
+            const contentType = headers["content-type"];
+
+            const resp = {
+                url,
+                contentLength,
+
+                // Access-Control-Allow-Origin
+                acao: headers["access-control-allow-origin"],
+
+                // Content-Type and Content-Encoding
+                contentType,
+                contentEncoding: headers["content-encoding"],
+
+                // header and transfer size
+                headerSize,
+                transferSize: contentLength + headerSize,
+
+                // find the asset type
+                assetType: getAssetTypeFor(url, contentType, contentLength),
+
+                // extract the host
+                host: new URL(url).host
+            };
+
+            if (!resp.assetType) {
+                debug(`No asset type for ${resp.url}`);
+            }
+
+            console.log(
+                "  ",
+                styleText("underline", truncate(resp.url, 80)),
+                resp.contentLength,
+                resp.headerSize,
+                resp.transferSize,
+                resp.assetType);
+
+            responses.push(resp);
+        });
+
+        // debug logging messages from the page
+        page.on("console", msg => debug(`Frame: ${msg.text()}`));
+
+        // make sure when the new document starts, we set the ResourceTiming buffer size listener
+        await page.evaluateOnNewDocument(trackResourceTimingBuffer);
+
+        // run through each page
+        for (let url of this.sites) {
+            crawlingActive = false;
+
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                // start with the HTTP site
+                url = `http://${url}/`;
+            }
+
+            // reset responses and url
+            responses = [];
+            currentUrl = url;
+
+            console.log(styleText("underline", url));
+
+            //
+            // Goto the specified URL
+            //
+            try {
+                crawlingActive = true;
+
+                await page.goto(url, {
+                    waitUntil: ["networkidle2", "load"],
+                    timeout: 30000
+                });
+            } catch {
+                console.log("Crawl timeout");
+                continue;
+            }
+
+            //
+            // Collect all ResourceTiming data
+            //
+            console.log("  [done loading, gathering ResourceTiming...]");
+
+            try {
+                const pageResourceTimingData = await page.evaluate(gatherResourceTimings);
+
+                // done crawling, don't let other resources sneak in
+                crawlingActive = false;
+
+                console.log("  [done gathering, analyzing...]");
+
+                // analyze ResourceTiming data
+                this.analyze(url, responses, pageResourceTimingData);
+            } catch (e) {
+                console.error("  [error in analysis]", e);
+            }
+
+            // go to about:blank so unload beacons get sent out for the previous page
+            // before the next one
+            await page.goto("about:blank", {
+                waitUntil: ["networkidle2", "load"],
+                timeout: 5000
+            });
+
+            await sleep(2000);
+        }
+    }
+
+    /**
+     * Analyzes the responses vs ResourceTiming
+     *
+     * @param {string} url URL
+     * @param {object[]} responses Responses
+     * @param {object} pageResourceTimingData ResourceTimings
+     */
+    analyze(url, responses, pageResourceTimingData) {
+        // index ResourceTimings by URL (keeping the first entry for each, if duplicated)
+        const resourceTimingsByUrl = new Map();
+
+        for (const res of pageResourceTimingData.resources) {
+            if (!resourceTimingsByUrl.has(res.name)) {
+                resourceTimingsByUrl.set(res.name, res);
+            }
+        }
+
+        const groups = Object.fromEntries(
+            Object.entries(ASSET_TYPE_GROUPS).map(([key, assetType]) =>
+                [key, this.analyzeForAssetType(assetType, responses, resourceTimingsByUrl)]));
+
+        const {
+            bufferSize,
+            exceededDefaultBuffer,
+            mainFrameEntries,
+            clearResourceTimingsCalled
+        } = pageResourceTimingData;
+
+        // show the output
+        console.log(groups.all);
+
+        // write the site JSON
+        this.outSites.write(JSON.stringify({
+            url,
+            ...groups,
+            bufferSize,
+            exceededDefaultBuffer,
+            mainFrameEntries,
+            clearResourceTimingsCalled
+        }) + "\n");
+
+        // write the URLs JSON
+        for (const response of responses) {
+            // link the site
+            response.site = url;
+
+            this.outUrls.write(JSON.stringify(response) + "\n");
+        }
+
+        if (this.debugMode) {
+            const { all } = groups;
+
+            console.log(`Visible (${all.visibleEntries + all.noTaoEntries}):`);
+
+            for (const response of responses.filter(r => !r.missing)) {
+                console.log(`\t${response.url}`);
+            }
+
+            console.log(`Missing (${all.missingEntries}):`);
+
+            for (const response of responses.filter(r => r.missing).sort((a, b) => a.url.localeCompare(b.url))) {
+                console.log(`\t${response.url}`);
+            }
+        }
+    }
+
+    /**
+     * Analyzes the responses vs ResourceTiming for a specific asset type
+     *
+     * @param {string|null} assetType Asset type (null for all)
+     * @param {object[]} responses Responses
+     * @param {Map<string, object>} resourceTimingsByUrl ResourceTimings, by URL
+     *
+     * @returns {object} ResourceTiming data
+     */
+    analyzeForAssetType(assetType, responses, resourceTimingsByUrl) {
+        const stats = {
+            totalEntries: 0,
+            totalBytes: 0,
+            visibleEntries: 0,
+            visibleBytes: 0,
+            noTaoEntries: 0,
+            noTaoBytes: 0,
+            noTaoAcaoWouldHelpEntries: 0,
+            noTaoAcaoWouldHelpBytes: 0,
+            missingEntries: 0,
+            missingBytes: 0
+        };
+
+        // only look at the specified asset type
+        const matching = assetType ?
+            responses.filter(response => response.assetType === assetType) :
+            responses;
+
+        for (const response of matching) {
+            const { url, transferSize } = response;
+
+            // try to find a matching ResourceTiming
+            const rt = resourceTimingsByUrl.get(url);
+
+            stats.totalEntries++;
+            stats.totalBytes += transferSize;
+
+            if (!rt) {
+                // ResourceTiming Missing
+                debug("\t", styleText("underline", url), `[${assetType}]`, "missing");
+                stats.missingEntries++;
+                stats.missingBytes += transferSize;
+                response.missing = true;
+            } else if (rt.noTao) {
+                // ResourceTiming Restricted
+                stats.noTaoEntries++;
+                stats.noTaoBytes += transferSize;
+
+                if (response.acao) {
+                    debug("\t", styleText("underline", url), `[${assetType}]`, "no TAO / has ACAO");
+                    stats.noTaoAcaoWouldHelpEntries++;
+                    stats.noTaoAcaoWouldHelpBytes += transferSize;
+                } else {
+                    debug("\t", styleText("underline", url), `[${assetType}]`, "no TAO");
+                }
+            } else {
+                // ResourceTiming Visible
+                stats.visibleEntries++;
+                stats.visibleBytes += transferSize;
+            }
+
+            // track the frame depth too
+            if (rt) {
+                response.frameDepth = rt.frameDepth;
+            }
+        }
+
+        return stats;
+    }
 }
 
 /**
- * Starts the Crawler run
- */
-Crawler.prototype.crawl = async function() {
-    console.log(chalk.green("Starting Crawler"));
-
-    // launch the browser
-    let browser = await puppeteer.launch();
-
-    // create a new page
-    let page = await browser.newPage();
-
-    // page responses
-    let responses = [];
-
-    // current URL we're downloading
-    let currentUrl = "";
-
-    // whether or not crawling is active
-    let crawlingActive = false;
-
-    // original URLs from redirects
-    let redirectOrigUrls = {};
-
-    // Listens for Page Responses
-    page.on("response", async response => {
-        if (!crawlingActive) {
-            // don't track new responses if we're beyond monitoring
-            return;
-        }
-
-        // skip the page itself
-        if (response.url() === currentUrl ||
-            response.url() === currentUrl + "/") {
-
-            // update to the new location so we skip that too
-            if (response.status() === 301 || response.status() === 302) {
-                currentUrl = response.headers().location;
-                console.log(`  -> redirect to ${currentUrl}`);
-            }
-
-            return;
-        }
-
-        if (response.status() === 301 || response.status() === 302) {
-            // skip redirects, saving the data so we know where later responses
-            // came from
-
-            const redirectedUrl = require("url").resolve(response.url(), response.headers().location);
-
-            redirectOrigUrls[redirectedUrl] = response.url();
-
-            return;
-        }
-
-        if (response.url().indexOf("http") !== 0) {
-            // skip data: and other URLs
-            return;
-        }
-
-        let resp = {
-            url: response.url()
-        };
-
-        // track from the redirect
-        if (redirectOrigUrls[resp.url]) {
-            resp.url = redirectOrigUrls[resp.url];
-        }
-
-        // track important headers
-        const headers = response.headers();
-
-        //
-        // Content-Length
-        //
-        resp.contentLength = 0;
-        if (headers["content-length"] && Number(headers["content-length"]) > 0) {
-            resp.contentLength = Number(headers["content-length"]);
-        } else {
-            try {
-                const buf = await response.buffer();
-                resp.contentLength = buf.byteLength;
-            } catch (e) {
-                // NOP
-            }
-        }
-
-        //
-        // Access-Control-Allow-Origin
-        //
-        resp.acao = headers["access-control-allow-origin"];
-
-        // Content-Type and Content-Encoding
-        resp.contentType = headers["content-type"];
-        resp.contentEncoding = headers["content-encoding"];
-
-        // headers size
-        var headerContents = "";
-        for (var header in headers) {
-            headerContents += header + ": " + headers[header] + "\n";
-        }
-
-        // header and transfer size
-        resp.headerSize = headerContents.length;
-        resp.transferSize = resp.contentLength + resp.headerSize;
-
-        // find the asset type
-        resp.assetType = getAssetTypeFor(resp.url, resp.contentType, resp.contentLength);
-        if (!resp.assetType) {
-            debug(`No asset type for ${resp.url}`);
-        }
-
-        // extract the host
-        const urlParsed = new URL(resp.url);
-        resp.host = urlParsed.host;
-
-        console.log(
-            "  ",
-            chalk.underline(limit(resp.url, 80, " ")),
-            resp.contentLength,
-            resp.headerSize,
-            resp.transferSize,
-            resp.assetType);
-
-        responses.push(resp);
-    });
-
-    // debug logging messages from the page
-    page.on("console", function(msg) {
-        debug(`Frame: ${msg.text()}`);
-    });
-
-    // make sure when the new document starts, we set the ResourceTiming buffer size listener
-    page.evaluateOnNewDocument(resourceTimingBufferSizeFn);
-
-    // run through each page
-    for (let url of this.sites) {
-        crawlingActive = false;
-
-        if (url.indexOf("http://") !== 0 &&
-            url.indexOf("https://") !== 0) {
-            // start with the HTTP site
-            url = "http://" + url + "/";
-        }
-
-        // reset responses and url
-        responses = [];
-        currentUrl = url;
-
-        console.log(chalk.underline(url));
-
-        //
-        // Goto the specified URL
-        //
-        try {
-            crawlingActive = true;
-
-            await page.goto(url, {
-                waitUntil: ["networkidle2", "load"],
-                timeout: 30000
-            });
-        } catch (e) {
-            console.log("Crawl timeout");
-            continue;
-        }
-
-        //
-        // Collect all ResourceTiming data
-        //
-        console.log("  [done loading, gathering ResourceTiming...]");
-
-        let pageResourceTimingData = [];
-        try {
-            pageResourceTimingData = await page.evaluate(resourceTimingFetchFn);
-
-            // done crawling, don't let other resources sneak in
-            crawlingActive = false;
-
-            console.log("  [done gathering, analyzing...]");
-
-            // analyze ResourceTiming data
-            await this.analyze(url, responses, pageResourceTimingData);
-        } catch (e) {
-            console.error("  [error in analysis]", e);
-        }
-
-        // go to about:blank so unload beacons get sent out for the previous page
-        // before the next one
-        await page.goto("about:blank", {
-            waitUntil: ["networkidle2", "load"],
-            timeout: 5000
-        });
-
-        await sleep(2000);
-    }
-
-    // stop the browser
-    browser.close();
-};
-
-/**
- * Analyzes the responses vs ResourceTiming
+ * Truncates or right-pads a string to an exact length
  *
- * @param {string} url URL
- * @param {Response} responses Responses
- * @param {object} pageResourceTimingData ResourceTimings
- */
-Crawler.prototype.analyze = async function(url, responses, pageResourceTimingData) {
-    const all = this.analyzeForAssetType(null, responses, pageResourceTimingData);
-    const javascripts = this.analyzeForAssetType("javascript", responses, pageResourceTimingData);
-    const css = this.analyzeForAssetType("css", responses, pageResourceTimingData);
-    const images = this.analyzeForAssetType("image", responses, pageResourceTimingData);
-    const xhrs = this.analyzeForAssetType("xhr", responses, pageResourceTimingData);
-    const fonts = this.analyzeForAssetType("font", responses, pageResourceTimingData);
-    const videos = this.analyzeForAssetType("video", responses, pageResourceTimingData);
-    const pixels = this.analyzeForAssetType("pixel", responses, pageResourceTimingData);
-    const html = this.analyzeForAssetType("html", responses, pageResourceTimingData);
-
-    const bufferSize = pageResourceTimingData.bufferSize;
-    const exceededDefaultBuffer = pageResourceTimingData.exceededDefaultBuffer;
-    const mainFrameEntries = pageResourceTimingData.mainFrameEntries;
-    const clearResourceTimingsCalled = pageResourceTimingData.clearResourceTimingsCalled;
-
-    // show the output
-    console.log(all);
-
-    // write the site JSON
-    outSites.write(JSON.stringify({
-        url, all, javascripts, css, images, xhrs, fonts, videos, pixels, html,
-        bufferSize, exceededDefaultBuffer, mainFrameEntries, clearResourceTimingsCalled
-    }));
-
-    outSites.write("\n");
-
-    // write the URLs JSON
-    for (let response of responses) {
-        // link the site
-        response.site = url;
-
-        outUrls.write(JSON.stringify(response));
-        outUrls.write("\n");
-    }
-
-    if (this.debugMode) {
-        console.log(`Visible (${all.visibleEntries + all.noTaoEntries}):`);
-        for (let response of responses.filter(r => !r.missing)) {
-            console.log(`\t${response.url}`);
-        }
-
-        console.log(`Missing (${all.missingEntries}):`);
-        for (let response of responses.filter(r => r.missing).sort(r => r.name)) {
-            console.log(`\t${response.url}`);
-        }
-    }
-};
-
-/**
- * Analyzes the responses vs ResourceTiming for a specific asset type
+ * @param {string} str String
+ * @param {number} length Length
  *
- * @param {string} assetType Asset type
- * @param {Response} responses Responses
- * @param {object} pageResourceTimingData ResourceTimings
- *
- * @returns {object} ResourceTiming data
+ * @returns {string} String of exactly the specified length
  */
-Crawler.prototype.analyzeForAssetType = function(assetType, responses, pageResourceTimingData) {
-    let totalEntries = 0;
-    let totalBytes = 0;
-    let visibleEntries = 0;
-    let visibleBytes = 0;
-    let noTaoEntries = 0;
-    let noTaoBytes = 0;
-    let noTaoAcaoWouldHelpEntries = 0;
-    let noTaoAcaoWouldHelpBytes = 0;
-    let missingEntries = 0;
-    let missingBytes = 0;
-
-    for (let response of responses) {
-        let url = response.url;
-
-        // only look at the specified asset type
-        if (assetType && assetType !== response.assetType) {
-            continue;
-        }
-
-        // try to find a matching ResourceTiming
-        let rt = pageResourceTimingData.resources.find(res => res.name === url);
-
-        totalEntries++;
-        totalBytes += response.transferSize;
-
-        if (!rt) {
-            // ResourceTiming Missing
-            debug("\t", chalk.underline(url), `[${assetType}]`, "missing");
-            missingEntries++;
-            missingBytes += response.transferSize;
-            response.missing = true;
-        } else if (rt.noTao) {
-            // ResourceTiming Restricted
-            noTaoEntries++;
-            noTaoBytes += response.transferSize;
-
-            if (response.acao) {
-                // ResourceTiming Restricted
-                debug("\t", chalk.underline(url), `[${assetType}]`, "no TAO / has ACAO");
-                noTaoAcaoWouldHelpEntries++;
-                noTaoAcaoWouldHelpBytes += response.transferSize;
-            } else {
-                debug("\t", chalk.underline(url), `[${assetType}]`, "no TAO");
-            }
-        } else {
-            // ResourceTiming Visible
-            visibleEntries++;
-            visibleBytes += response.transferSize;
-        }
-
-        // track the frame depth too
-        if (rt) {
-            response.frameDepth = rt.frameDepth;
-        }
-    }
-
-    return {
-        totalEntries,
-        totalBytes,
-        visibleEntries,
-        visibleBytes,
-        noTaoEntries,
-        noTaoBytes,
-        noTaoAcaoWouldHelpEntries,
-        noTaoAcaoWouldHelpBytes,
-        missingEntries,
-        missingBytes,
-    };
-};
+function truncate(str, length) {
+    return str.length > length ? str.slice(0, length) : str.padEnd(length, " ");
+}
 
 /**
  * Gets the asset type for a URL
  *
  * @param {string} url URL
  * @param {string} contentType Content-Type
- * @param {string} contentLength Content-Length
+ * @param {number} contentLength Content-Length
  *
  * @returns {undefined|string} Asset type, if detected
  */
@@ -384,10 +426,9 @@ function getAssetTypeFor(url, contentType, contentLength) {
     // if we don't have the Content-Type, try a few URL sniffs
     if (!contentType) {
         // URL sniffing
-        if (url.indexOf(".woff") !== -1 ||
-            url.indexOf(".ttf") !== -1) {
+        if (url.includes(".woff") || url.includes(".ttf")) {
             return "font";
-        } else if (url.indexOf(".html") !== -1) {
+        } else if (url.includes(".html")) {
             return "html";
         }
 
@@ -398,13 +439,11 @@ function getAssetTypeFor(url, contentType, contentLength) {
         return undefined;
     }
 
-    // fix content-type
-    if (contentType.indexOf(";") !== -1) {
-        contentType = contentType.substring(0, contentType.indexOf(";")).trim();
-    }
+    // strip any parameters (e.g. "; charset=utf-8")
+    const mimeType = contentType.split(";")[0].trim().toLowerCase();
 
     // Get Asset Type based on Content-Type
-    switch (contentType.toLowerCase()) {
+    switch (mimeType) {
         case "application/javascript":
         case "application/x-javascript":
         case "text/javascript":
@@ -504,8 +543,3 @@ function getAssetTypeFor(url, contentType, contentLength) {
 
     return undefined;
 }
-
-//
-// Exports
-//
-module.exports = Crawler;

@@ -1,47 +1,44 @@
-"use strict";
-/* eslint-env browser */
 //
 // Exports
 //
-exports.fetch = async function() {
+
+/**
+ * Runs in the page to gather ResourceTiming data from the page and all accessible frames.
+ *
+ * NOTE: This function is serialized by Puppeteer, so it must be self-contained.
+ *
+ * @returns {object} ResourceTiming data
+ */
+export function gatherResourceTimings() {
     /**
      * Determines if the frame is accessible and has the performance object
      *
-     * @param {Frame} frame Frame
+     * @param {Window} frame Frame
      *
      * @returns {boolean} True if accessible
      */
     function isFrameAccessible(frame) {
-        /* eslint-disable-next-line no-unused-vars */
-        var dummy;
-
         try {
-            dummy = frame.location && frame.location.href;
-            dummy = frame.document;
-
-            if (("performance" in frame) && frame.performance) {
-                return true;
-            }
-        } catch (e) {
-            // NOP
+            // accessing location.href / document throws for cross-origin frames
+            return Boolean(frame.location.href && frame.document && frame.performance);
+        } catch {
+            return false;
         }
-
-        return false;
     }
 
     /**
      * Crawls the frame
      *
-     * @param {Frame} frame Frame
+     * @param {Window} frame Frame
      * @param {boolean} isTopWindow If the top window
      * @param {number} depth Frame depth
      *
-     * @returns {object} ResourceTiming data
+     * @returns {object[]} ResourceTiming entries
      */
     function crawlFrame(frame, isTopWindow, depth) {
         console.log(`Crawling frame top: ${isTopWindow} depth: ${depth}`);
 
-        let entries = [];
+        const entries = [];
 
         try {
             if (!isFrameAccessible(frame)) {
@@ -50,23 +47,17 @@ exports.fetch = async function() {
 
             console.log(`  url: ${frame.location.href}`);
 
-            if (frame.frames) {
-                for (let i = 0; i < frame.frames.length; i++) {
-                    entries = entries.concat(crawlFrame(frame.frames[i], false, depth + 1, i));
-                }
+            for (const childFrame of Array.from(frame.frames ?? [])) {
+                entries.push(...crawlFrame(childFrame, false, depth + 1));
             }
 
             if (typeof frame.performance.getEntriesByType !== "function") {
                 return [];
             }
 
-            let frameEntries = frame.performance.getEntriesByType("resource");
-
-            for (let i = 0; frameEntries && i < frameEntries.length; i++) {
-                let res = frameEntries[i];
-
+            for (const res of frame.performance.getEntriesByType("resource")) {
                 // reduce to what we want in the analyzer
-                let rtEntry = {
+                entries.push({
                     name: res.name,
                     initiatorType: res.initiatorType,
                     transferSize: res.transferSize,
@@ -74,22 +65,22 @@ exports.fetch = async function() {
                     noTao: res.responseStart === 0,
                     responseStart: res.responseStart,
                     frameDepth: depth
-                };
-
-                entries.push(rtEntry);
+                });
             }
-        } catch (e) {
+        } catch {
             // NOP
         }
 
         return entries;
     }
 
+    const mainFrameEntries = window.performance.getEntriesByType("resource").length;
+
     return {
-        resources: crawlFrame(window, true, 0, 0, 0),
-        bufferSize: window.setResourceTimingBufferSize ? window.setResourceTimingBufferSize : 150,
-        clearResourceTimingsCalled: window.clearResourceTimingsCalled ? window.clearResourceTimingsCalled : false,
-        exceededDefaultBuffer: window.performance.getEntriesByType("resource").length >= 150,
-        mainFrameEntries: window.performance.getEntriesByType("resource").length
+        resources: crawlFrame(window, true, 0),
+        bufferSize: window.setResourceTimingBufferSize ?? 150,
+        clearResourceTimingsCalled: window.clearResourceTimingsCalled ?? false,
+        exceededDefaultBuffer: mainFrameEntries >= 150,
+        mainFrameEntries
     };
-};
+}

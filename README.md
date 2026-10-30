@@ -16,6 +16,17 @@ ResourceTiming vs. what the browser downloads.
 Resources that won't be visible to ResourceTiming are items downloaded via
 cross-origin IFRAMEs.
 
+## Requirements
+
+Node.js 22.12+.
+
+```
+npm install
+```
+
+If npm blocks Puppeteer's `postinstall` script (which downloads Chrome), run
+`npx puppeteer browsers install chrome`.
+
 ## Usage
 
 Crawl one URL:
@@ -29,6 +40,8 @@ Crawl Top N URLs
 ```
 node index.js [n]
 ```
+
+Add `--debug` to list visible vs. missing URLs for each site.
 
 ## Version History
 
