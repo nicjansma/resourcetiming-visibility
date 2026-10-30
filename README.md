@@ -50,7 +50,8 @@ Crawl one URL:
 node index.js https://nicj.net/
 ```
 
-Crawl the Top N sites, where N is `1000`, `10K`, `100K` or `1M`:
+Crawl the Top N sites, where N is `1K`, `5K`, `10K`, `50K`, `100K`, `500K` or
+`1M` (or the full number, e.g. `10000`):
 
 ```sh
 node index.js 10K
@@ -58,6 +59,14 @@ node index.js 10K
 
 The Top N sites are all origins with a CrUX rank of N or better. Order within a
 rank bucket is random.
+
+Use `--limit M` to only crawl the first M of those sites. Higher-ranked buckets
+come first, so `--limit` takes from the best-ranked bucket before moving on to
+the next:
+
+```sh
+node index.js 1M --limit 500
+```
 
 Add `--debug` to list visible vs. missing URLs for each site.
 
